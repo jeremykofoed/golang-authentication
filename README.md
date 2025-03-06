@@ -50,13 +50,13 @@ This project is a sandbox RESTful API built with Go that handles user authentica
 #### Register a user
 
 ```bash
-curl -X POST http://localhost:8080/register -H "Content-Type: application/json" -d '{"username": "test", "password": "password123"}'
+curl -X POST http://localhost:8080/register -H "Content-Type: application/json" -d '{"player_id": "test1234", "password": "password123"}'
 ```
 
 #### Login
 
 ```bash
-curl -X POST http://localhost:8080/login -H "Content-Type: application/json" -d '{"username": "test", "password": "password123"}'
+curl -X POST http://localhost:8080/login -H "Content-Type: application/json" -d '{"player_id": "test1234", "password": "password123"}'
 ```
 
 #### Access protected route
@@ -70,10 +70,10 @@ curl -X GET http://localhost:8080/protected -H "Authorization: Bearer YOUR_JWT_T
 ```
 golang-authentication/
 ├── client/
+│   ├── client.go
+│   └── ...
 ├── server/
-│   ├── main.go
-│   ├── handlers.go
-│   ├── middleware.go
+│   ├── server.go
 │   └── ...
 ├── go.mod
 ├── go.sum
