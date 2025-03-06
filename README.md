@@ -41,7 +41,7 @@ This project is a sandbox RESTful API built with Go that handles user authentica
 
 ## API Endpoints
 
-- **`POST /register`**: Register a new user.
+- **`POST /create`**: Register a new user.
 - **`POST /login`**: Authenticate a user and return a JWT.
 - **`GET /something`**: Access a protected route (requires JWT).
 
@@ -50,7 +50,7 @@ This project is a sandbox RESTful API built with Go that handles user authentica
 #### Register a user
 
 ```bash
-curl -X POST http://localhost:8080/register -H "Content-Type: application/json" -d '{"player_id": "test1234", "password": "password123"}'
+curl -X POST http://localhost:8080/create -H "Content-Type: application/json" -d '{"player_id": "test1234", "password": "password123"}'
 ```
 
 #### Login
