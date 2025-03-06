@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 )
 
 // Consts
+// @JWK TODO: Testing values, replace with proper TTL values.
 const TTL_ACCESS_TOKEN = 60   //Seconds
 const TTL_REFRESH_TOKEN = 300 //Seconds = 60 * 5 minutes
 
@@ -40,7 +42,7 @@ var (
 	db        *sql.DB
 	rdb       *redis.Client
 	once      sync.Once
-	jwtSecret = []byte("SECRET_KEY") //@JWK TODO: Store this in ENV
+	jwtSecret = []byte("SECRET_KEY") //@JWK TODO: Change and Store this in ENV
 )
 
 // Initialize resources.  init() gets called before main().
@@ -74,7 +76,7 @@ func initRedis() {
 	//Redis
 	rdb = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
-		Password: "",
+		Password: "", //@JWK TODO: Add password
 		DB:       0,
 	})
 
@@ -311,6 +313,55 @@ func handlerLoginUser(res http.ResponseWriter, req *http.Request) {
 	handlerClientResponse(res, "User successfully created!", http.StatusOK, &token)
 }
 
+// Protected Handler: To do something.
+func pHandlerDoSomething(res http.ResponseWriter, req *http.Request) {
+	//Successful.
+	var token *Token = nil
+	handlerClientResponse(res, "Something done!", http.StatusOK, token)
+}
+
+// Intermediary Handler: Authenticate the JWT which will allow another handler fx to be called.
+func iHandlerAuthenticate(fx http.HandlerFunc) http.HandlerFunc {
+	return func(res http.ResponseWriter, req *http.Request) {
+		auth := req.Header.Get("Authorization")
+		if auth == "" {
+			msg := ""
+			handlerError(res, msg, "Missing authentication token", http.StatusUnauthorized)
+			return
+		}
+
+		//Grab just the token.
+		sToken := strings.TrimPrefix(auth, "Bearer ")
+
+		//Authorization wasn't formatted properly if the removal of the prefix is the same as the original.
+		if sToken == auth {
+			msg := ""
+			handlerError(res, msg, "Malformed authorization request", http.StatusUnauthorized)
+			return
+		}
+
+		//Parse and validate the token.  The anonymous function retuns the secret used during generation.
+		token, err := jwt.Parse(sToken, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil {
+			msg := fmt.Sprintf("Error parsing JWT: %v", err)
+			handlerError(res, msg, "Error parsing token", http.StatusInternalServerError)
+			return
+		}
+		if !token.Valid {
+			msg := ""
+			handlerError(res, msg, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		//@JWK TODO: Setup claims struct, adjust to jwt.ParseWithClaims() to extract the player id from the token and set in the request context to make it available on chained calls.
+
+		//Success, chain next handler function (fx).
+		fx(res, req)
+	}
+}
+
 // Main
 func main() {
 	//Defers for clean up and panic recovery.
@@ -320,12 +371,11 @@ func main() {
 
 	//Router multiplexer.
 	//@JWK TODO: Add in rate limiting to help with DDoS.
+	//@JWK TODO: Add in refresh token handler.
 	router := http.NewServeMux()
 	router.HandleFunc("/create", handlerCreateUser)
 	router.HandleFunc("/login", handlerLoginUser)
-	//@JWK TODO: refresh token handler
-	//@JWK TODO: verify JWT for authentication.
-	//@JWK TODO: protected routes handler or something else to do once JWT is verified.
+	router.HandleFunc("/something", iHandlerAuthenticate(pHandlerDoSomething))
 
 	//Port check for deployed or local.
 	port := os.Getenv("PORT")

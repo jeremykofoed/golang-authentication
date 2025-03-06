@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 )
 
@@ -29,44 +28,49 @@ type Token struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-// Calls: Create user
-func callCreateUser(user User) error {
-	url := apiURL + "/create"
+// Call public route to create or login user.
+func callUserRoute(user User, route string) (*Token, error) {
+	url := apiURL + route
 	rBody, err := json.Marshal(user)
 	if err != nil {
-		return fmt.Errorf("failed to marshal user: %v; Error: %v", user, err)
+		return nil, fmt.Errorf("failed to marshal user: %v; Error: %v", user, err)
 	}
 
 	res, err := http.Post(url, contentType, bytes.NewBuffer(rBody))
 	if err != nil {
-		return fmt.Errorf("failed to send request: %v; URL: %s; Error: %v", rBody, url, err)
+		return nil, fmt.Errorf("failed to send request: %v; URL: %s; Error: %v", rBody, url, err)
 	}
 	defer res.Body.Close()
 
 	var cRes ClientResponse
 	if err = json.NewDecoder(res.Body).Decode(&cRes); err != nil {
-		return fmt.Errorf("failed to unmarshal server response: %+v; Error: %v", res.Body, err)
+		return nil, fmt.Errorf("failed to unmarshal server response: %+v; Error: %v", res.Body, err)
 	}
 
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("unsuccessful call, server response: %+v; URL: %s", cRes, url)
+		return nil, fmt.Errorf("unsuccessful call, server response: %+v; URL: %s", cRes, url)
 	}
+
+	token := &cRes.Token
 
 	fmt.Printf("Successful api call: %+v\n", cRes)
-	return nil
+	return token, nil
 }
 
-// Calls: Login user
-func callLoginUser(user User) error {
-	url := apiURL + "/login"
-	rBody, err := json.Marshal(user)
-	if err != nil {
-		return fmt.Errorf("failed to marshal user: %v; Error: %v", user, err)
-	}
+// Call public route to create or login user.
+func callProtectedRoute(token *Token, route string) error {
+	url := apiURL + route
 
-	res, err := http.Post(url, contentType, bytes.NewBuffer(rBody))
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %v; URL: %s; Error: %v", rBody, url, err)
+		return fmt.Errorf("failed to create request; URL: %s; Error: %v", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+
 	}
 	defer res.Body.Close()
 
@@ -88,11 +92,17 @@ func main() {
 		PlayerID: "jeremy@test.com",
 		Password: "password12345",
 	}
-	//@JWK TODO: Implement check for existing user error and call login.
-	if err := callCreateUser(user); err != nil {
+	if _, err := callUserRoute(user, "/create"); err != nil {
 		fmt.Printf("Error: %v\n", err)
 	}
-	if err := callLoginUser(user); err != nil {
-		log.Printf("Error: %v\n", err)
+	token, err := callUserRoute(user, "/login")
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	}
+	if token == nil {
+		fmt.Println("Token is empty")
+	}
+	if err := callProtectedRoute(token, "/something"); err != nil {
+		fmt.Printf("Error: %v\n", err)
 	}
 }
