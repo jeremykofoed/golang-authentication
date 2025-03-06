@@ -43,7 +43,7 @@ This project is a sandbox RESTful API built with Go that handles user authentica
 
 - **`POST /register`**: Register a new user.
 - **`POST /login`**: Authenticate a user and return a JWT.
-- **`GET /protected`**: Access a protected route (requires JWT).
+- **`GET /something`**: Access a protected route (requires JWT).
 
 ### Example Requests
 
