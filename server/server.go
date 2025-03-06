@@ -41,16 +41,16 @@ var (
 	err       error
 	db        *sql.DB
 	rdb       *redis.Client
-	once      sync.Once
+	onceDB    sync.Once
+	onceRDB   sync.Once
 	jwtSecret = []byte("SECRET_KEY") //@JWK TODO: Change and Store this in ENV
 )
 
-// Initialize resources.  init() gets called before main().
+// Runs before main(), this will initalize the resources once with connection / worker pools.
 func init() {
-	once.Do(func() {
-		initPostgres()
-		initRedis()
-	})
+	//@JWK TODO: Stress test this to see limitations of current configuration.
+	getDB()
+	getRDB()
 }
 
 // Initialize callee.
@@ -61,6 +61,11 @@ func initPostgres() {
 	if err != nil {
 		log.Fatalf("Error making database connection: %v", err)
 	}
+
+	//Set scaling connection pool for load distribution / concurrency.
+	db.SetMaxOpenConns(20)   //Max pool size.
+	db.SetMaxIdleConns(10)   //Idle pool size.
+	db.SetConnMaxLifetime(0) //0, connections are not closed due to age.
 
 	//Check postgres connection.
 	err = db.Ping()
@@ -78,6 +83,7 @@ func initRedis() {
 		Addr:     "localhost:6379",
 		Password: "", //@JWK TODO: Add password
 		DB:       0,
+		PoolSize: 20, //Max pool size
 	})
 
 	//Check redis connection
@@ -88,6 +94,18 @@ func initRedis() {
 	}
 
 	log.Println("Redis running ...")
+}
+
+// Get resource from connection pool.
+func getDB() *sql.DB {
+	onceDB.Do(initPostgres)
+	return db
+}
+
+// Get resource from connection pool.
+func getRDB() *redis.Client {
+	onceRDB.Do(initRedis)
+	return rdb
 }
 
 // Close resources, deferred in main().
@@ -160,14 +178,16 @@ func handlerClientResponse(res http.ResponseWriter, msg string, code int, token 
 }
 
 // Handler: Better error handling to determine the location of errors.
-func handlerError(res http.ResponseWriter, msg string, err string, code int) {
+func handlerError(output bool, res http.ResponseWriter, msg string, err string, code int) {
 	//Get details about where the error took place (program counter, file, line, success)
 	pc, file, line, _ := runtime.Caller(1)
 	fx := runtime.FuncForPC(pc)
 
 	//Log the HTTP error.
 	//@JWK TODO: Make sure this is handled properly by streaming to central log repository.
-	log.Printf("Error on %s in %s at line %d; Msg: %s", file, fx.Name(), line, msg)
+	if output {
+		log.Printf("Error on %s in %s at line %d; Msg: %s", file, fx.Name(), line, msg)
+	}
 
 	//Send reponse to client.
 	var token *Token = nil
@@ -179,7 +199,7 @@ func handlerCreateUser(res http.ResponseWriter, req *http.Request) {
 	//Check to make sure the method is POST.
 	if req.Method != http.MethodPost {
 		msg := fmt.Sprintf("Request method used: %s", req.Method)
-		handlerError(res, msg, "Method not allowed", http.StatusMethodNotAllowed)
+		handlerError(true, res, msg, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -192,29 +212,32 @@ func handlerCreateUser(res http.ResponseWriter, req *http.Request) {
 	//Decode the json body into the struct.
 	if err := json.NewDecoder(req.Body).Decode(&params); err != nil {
 		msg := fmt.Sprintf("Bad client input: %v", req.Body)
-		handlerError(res, msg, "Unable to parse the client input", http.StatusBadRequest)
+		handlerError(true, res, msg, "Unable to parse the client input", http.StatusBadRequest)
 		return
 	}
 
 	hashedPassword, err := utilHashPassword(params.Password)
 	if err != nil {
 		msg := fmt.Sprintf("Error hashing password: %v", err)
-		handlerError(res, msg, "Unable to hash password", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Unable to hash password", http.StatusInternalServerError)
 		return
 	}
+
+	//Grab from the connection pool.
+	db := getDB()
 
 	//Query to see if the user exists already.
 	sql := "SELECT id, player_id, password FROM users where player_id = $1"
 	rows, err := db.Query(sql, params.PlayerID) //Optionally use QueryRow()
 	if err != nil {
 		msg := fmt.Sprintf("Error executing query: %v; SQL: %s; Params: %v", err, sql, params)
-		handlerError(res, msg, "Unable to execute query", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Unable to execute query", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 	if rows.Next() { //This should be false unless the player_id already exists.
 		msg := ""
-		handlerError(res, msg, "Player ID already exists", http.StatusConflict)
+		handlerError(false, res, msg, "Player ID already exists", http.StatusConflict)
 		return
 	}
 
@@ -223,7 +246,7 @@ func handlerCreateUser(res http.ResponseWriter, req *http.Request) {
 	_, err = db.Exec(sql, params.PlayerID, hashedPassword)
 	if err != nil {
 		msg := fmt.Sprintf("Error executing query: %v; SQL: %s; Params: %s, %s", err, sql, params.PlayerID, hashedPassword)
-		handlerError(res, msg, "Unable to execute query", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Unable to execute query", http.StatusInternalServerError)
 		return
 	}
 
@@ -237,7 +260,7 @@ func handlerLoginUser(res http.ResponseWriter, req *http.Request) {
 	//Check to make sure the method is POST.
 	if req.Method != http.MethodPost {
 		msg := fmt.Sprintf("Request method used: %s", req.Method)
-		handlerError(res, msg, "Method not allowed", http.StatusMethodNotAllowed)
+		handlerError(true, res, msg, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -250,36 +273,39 @@ func handlerLoginUser(res http.ResponseWriter, req *http.Request) {
 	//Decode the json body into the struct.
 	if err := json.NewDecoder(req.Body).Decode(&params); err != nil {
 		msg := fmt.Sprintf("Bad client input: %v", req.Body)
-		handlerError(res, msg, "Unable to parse the client input", http.StatusBadRequest)
+		handlerError(true, res, msg, "Unable to parse the client input", http.StatusBadRequest)
 		return
 	}
+
+	//Grab from the connection pool.
+	db := getDB()
 
 	//Query to get user information.
 	sql := "SELECT id, player_id, password FROM users where player_id = $1"
 	rows, err := db.Query(sql, params.PlayerID) //Optionally use QueryRow()
 	if err != nil {
 		msg := fmt.Sprintf("Error executing query: %v; SQL: %s; Params: %v", err, sql, params)
-		handlerError(res, msg, "Unable to execute query", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Unable to execute query", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 	if !rows.Next() { //This should be true unless the player_id does not exist.
 		msg := ""
-		handlerError(res, msg, "Player ID does not exist", http.StatusConflict)
+		handlerError(false, res, msg, "Player ID does not exist", http.StatusConflict)
 		return
 	}
 
 	var user User
 	if err = rows.Scan(&user.ID, &user.PlayerID, &user.Password); err != nil {
 		msg := fmt.Sprintf("Errow row scanning: %v", err)
-		handlerError(res, msg, "Player ID does not exist", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Player ID does not exist", http.StatusInternalServerError)
 		return
 	}
 
 	//Compare passwords.
 	if !utilComparePassword(user.Password, params.Password) {
 		msg := ""
-		handlerError(res, msg, "Invalid credentials", http.StatusUnauthorized)
+		handlerError(false, res, msg, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
@@ -288,7 +314,7 @@ func handlerLoginUser(res http.ResponseWriter, req *http.Request) {
 	token.AccessToken, err = utilGenerateToken(user.PlayerID, TTL_ACCESS_TOKEN)
 	if err != nil {
 		msg := fmt.Sprintf("Error generating access token: %v", err)
-		handlerError(res, msg, "Failed to generate token", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
 
@@ -296,16 +322,19 @@ func handlerLoginUser(res http.ResponseWriter, req *http.Request) {
 	token.RefreshToken, err = utilGenerateToken(user.PlayerID, TTL_REFRESH_TOKEN)
 	if err != nil {
 		msg := fmt.Sprintf("Error generating refresh token: %v", err)
-		handlerError(res, msg, "Failed to generate token", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
+
+	//Grab from the connection pool.
+	rdb := getRDB()
 
 	//Store refresh token in Redis.
 	key := "refresh_token:" + user.PlayerID
 	err = rdb.Set(context.Background(), key, token.RefreshToken, time.Second*TTL_REFRESH_TOKEN).Err()
 	if err != nil {
 		msg := fmt.Sprintf("Error with Redis Set: %v", err)
-		handlerError(res, msg, "Failed to save to Redis", http.StatusInternalServerError)
+		handlerError(true, res, msg, "Failed to save to Redis", http.StatusInternalServerError)
 		return
 	}
 
@@ -326,7 +355,7 @@ func iHandlerAuthenticate(fx http.HandlerFunc) http.HandlerFunc {
 		auth := req.Header.Get("Authorization")
 		if auth == "" {
 			msg := ""
-			handlerError(res, msg, "Missing authentication token", http.StatusUnauthorized)
+			handlerError(false, res, msg, "Missing authentication token", http.StatusUnauthorized)
 			return
 		}
 
@@ -336,7 +365,7 @@ func iHandlerAuthenticate(fx http.HandlerFunc) http.HandlerFunc {
 		//Authorization wasn't formatted properly if the removal of the prefix is the same as the original.
 		if sToken == auth {
 			msg := ""
-			handlerError(res, msg, "Malformed authorization request", http.StatusUnauthorized)
+			handlerError(false, res, msg, "Malformed authorization request", http.StatusUnauthorized)
 			return
 		}
 
@@ -346,12 +375,12 @@ func iHandlerAuthenticate(fx http.HandlerFunc) http.HandlerFunc {
 		})
 		if err != nil {
 			msg := fmt.Sprintf("Error parsing JWT: %v", err)
-			handlerError(res, msg, "Error parsing token", http.StatusInternalServerError)
+			handlerError(true, res, msg, "Error parsing token", http.StatusInternalServerError)
 			return
 		}
 		if !token.Valid {
 			msg := ""
-			handlerError(res, msg, "Invalid token", http.StatusUnauthorized)
+			handlerError(false, res, msg, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
@@ -370,7 +399,7 @@ func main() {
 	//@JWK TODO: Panic recovery
 
 	//Router multiplexer.
-	//@JWK TODO: Add in rate limiting to help with DDoS.
+	//@JWK TODO: Add in rate limiting to help with DDoS and API request abuse.
 	//@JWK TODO: Add in refresh token handler.
 	router := http.NewServeMux()
 	router.HandleFunc("/create", handlerCreateUser)
